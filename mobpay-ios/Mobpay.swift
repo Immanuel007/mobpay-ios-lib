@@ -13,6 +13,7 @@ import SwiftyRSA
 import SafariServices
 import CocoaMQTT
 import Alamofire
+import Starscream
 
 public class Mobpay:UIViewController {
 
