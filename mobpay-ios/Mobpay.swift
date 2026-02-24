@@ -6,7 +6,6 @@
 //  Copyright © 2019 interswitchke. All rights reserved.
 //
 
-
 import Foundation
 import CryptoSwift
 import SwiftyRSA
@@ -15,212 +14,158 @@ import CocoaMQTT
 import Alamofire
 import Starscream
 
-public class Mobpay:UIViewController {
+public class Mobpay: UIViewController {
 
     public static let instance = Mobpay()
     
-    var mqtt: CocoaMQTT!
-    var merchantId:String!
-    var transactionRef:String!
+    private var mqtt5: CocoaMQTT5!
+    
+    var merchantId: String!
+    var transactionRef: String!
     public var baseURL: String = "https://gatewaybackend-uat.quickteller.co.ke"
     public var mqttHostURL: String = "testmerchant.interswitch-ke.com"
     
-    public var MobpayDelegate:MobpayPaymentDelegate?
+    private var onPaymentResult: ((String) -> Void)?
+    private weak var navController: UINavigationController?
     
+    public var MobpayDelegate: MobpayPaymentDelegate?
     
-    public func submitPayment(checkout:CheckoutData, isLive:Bool ,previousUIViewController:UIViewController,completion:@escaping(String)->())async throws{
-        do {
-            if(isLive){
-                self.baseURL = "https://gatewaybackend.quickteller.co.ke"
-                self.mqttHostURL = "merchant.interswitch-ke.com"
-            }
+    public func submitPayment(checkout: CheckoutData, isLive: Bool, previousUIViewController: UIViewController, completion: @escaping(String) -> ()) async throws {
+        
+        if isLive {
+            self.baseURL = "https://gatewaybackend.quickteller.co.ke"
+            self.mqttHostURL = "merchant.interswitch-ke.com"
+        }
 
-            let headers: HTTPHeaders = [
-                    "Content-Type" : "application/x-www-form-urlencoded",
-                    "Device" : "iOS"
-                ]
-            self.merchantId = checkout.merchantCode
-            self.transactionRef = checkout.transactionReference
+        let headers: HTTPHeaders = [
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Device": "iOS"
+        ]
+        
+        self.merchantId = checkout.merchantCode
+        self.transactionRef = checkout.transactionReference
+        self.onPaymentResult = completion
+        self.navController = previousUIViewController.navigationController
+                
+        AF.request("\(self.baseURL)/ipg-backend/api/checkout",
+                   method: .post,
+                   parameters: checkout,
+                   encoder: URLEncodedFormParameterEncoder.default,
+                   headers: headers)
+        .response { response in
+            debugPrint(response)
             
-            AF.request("\(self.baseURL)/ipg-backend/api/checkout",
-                        method: .post,
-                        parameters: checkout,
-                        encoder: URLEncodedFormParameterEncoder.default, headers: headers)
-                .response { response in
-                    debugPrint(response)
-                    self.setUpMQTT()
-                    let threeDS = ThreeDSWebView(webCardinalURL: (response.response?.url)!)
-                    DispatchQueue.main.async {
-                        previousUIViewController.navigationController?.pushViewController(threeDS, animated: true)
-                    }
-                    self.mqtt.didReceiveMessage = { mqtt, message, id in
-                        mqtt.disconnect()
-                        previousUIViewController.navigationController?.popViewController(animated: true)
-                        completion(message.string!)
-                    }
-                }
-        } catch {
-            throw error
+            self.setUpMQTT()
+            
+            let threeDS = ThreeDSWebView(webCardinalURL: (response.response?.url)!)
+            
+            DispatchQueue.main.async {
+                previousUIViewController.navigationController?.pushViewController(threeDS, animated: true)
+                self.navController = previousUIViewController.navigationController
+                self.onPaymentResult = completion
+            }
         }
     }
-    
-    // MQTT
-    
-//    func setUpMQTT(){
-//        let clientID = "iOS-" + String(ProcessInfo().processIdentifier)
-//        mqtt = CocoaMQTT(clientID: clientID, host: self.mqttHostURL, port: 8084)
-//        mqtt.username = ""
-//        mqtt.password = ""
-//        mqtt.willMessage = CocoaMQTTMessage(topic: "/will", string: "dieout")
-//        mqtt.keepAlive = 60
-//        mqtt.connect()
-//        mqtt.delegate = self
-//    }
-    
-    
-    // MQTT 5
-    
-//    func setUpMQTT(){
-//        let clientID = "iOS-" + String(ProcessInfo().processIdentifier)
-//
-//        // Use MQTTS (MQTT over TLS) - no WebSocket needed
-//        mqtt = CocoaMQTT5(clientID: clientID, host: self.mqttHostURL, port: 8084)
-//
-//        mqtt.username = ""
-//        mqtt.password = ""
-//
-//        // Enable SSL
-//        mqtt.enableSSL = true
-//        mqtt.allowUntrustCACertificate = true
-//
-//        // MQTT 5 properties
-//        let connectProperties = MqttConnectProperties()
-//        connectProperties.topicAliasMaximum = 10
-//        connectProperties.sessionExpiryInterval = 0
-//        connectProperties.receiveMaximum = 100
-//        connectProperties.maximumPacketSize = 500
-//
-//        mqtt.connectProperties = connectProperties
-//        mqtt.keepAlive = 60
-//        mqtt.willMessage = CocoaMQTT5Message(topic: "/will", string: "dieout")
-//
-//        mqtt.delegate = self
-//        mqtt.connect()
-//    }
-    
-    
-    // MQTT with Web Sockets
     
     func setUpMQTT() {
         let clientID = "iOS-" + String(ProcessInfo().processIdentifier)
         
         let websocket = CocoaMQTTWebSocket(uri: "/mqtt")
-        websocket.enableSSL = true
-
-        let mqtt = CocoaMQTT(
+        
+        mqtt5 = CocoaMQTT5(
             clientID: clientID,
-            host: self.mqttHostURL,
+            host: mqttHostURL,
             port: 8084,
             socket: websocket
         )
-
-        mqtt.username = ""
-        mqtt.password = ""
-        mqtt.allowUntrustCACertificate = true
-
-
         
-        mqtt.willMessage = CocoaMQTTMessage(
-            topic: "/will",
-            string: "dieout"
-        )
-
-        mqtt.keepAlive = 60
-        mqtt.delegate = self
-        self.mqtt = mqtt
-        connect()
-
+        let connectProperties = MqttConnectProperties()
+        connectProperties.topicAliasMaximum = 0
+        connectProperties.sessionExpiryInterval = 0
+        connectProperties.receiveMaximum = 100
+        connectProperties.maximumPacketSize = 500
+        
+        mqtt5.connectProperties = connectProperties
+        
+        mqtt5.enableSSL = true
+        
+        mqtt5.username = ""
+        mqtt5.password = ""
+        
+        mqtt5.willMessage = CocoaMQTT5Message(topic: "/will", string: "dieout")
+        mqtt5.keepAlive = 60
+        mqtt5.delegate = self
+        
+        // Connect
+        mqtt5.connect()
     }
-    func connect() {
-            guard let mqttClient = mqtt else { return }
-            mqttClient.connect()
-        }
-
 }
 
-
-
-extension Mobpay: CocoaMQTTDelegate {
+extension Mobpay: CocoaMQTT5Delegate {
     
-    public func mqtt(_ mqtt: CocoaMQTT, didReceive trust: SecTrust, completionHandler: @escaping (Bool) -> Void) {
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didReceive trust: SecTrust, completionHandler: @escaping (Bool) -> Void) {
         completionHandler(true)
     }
     
-    func mqtt(_ mqtt: CocoaMQTT, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
-            if let serverTrust = challenge.protectionSpace.serverTrust {
-                completionHandler(.useCredential, URLCredential(trust: serverTrust))
-                return
-            }
-        }
-        completionHandler(.performDefaultHandling, nil)
-    }
-    
-    public func mqttUrlSession(_ mqtt: CocoaMQTT, didReceiveTrust trust: SecTrust, didReceiveChallenge challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        print("\(#function), \n result:- \(challenge.debugDescription)")
-    }
-    
-    public func mqtt(_ mqtt: CocoaMQTT, didPublishAck id: UInt16) {
-        print("Published message with ID: \(id)")
-    }
-    
-    public func mqtt(_ mqtt: CocoaMQTT, didUnsubscribeTopics topics: [String]) {
-        print("Unsubscribed from topics: \(topics)")
-    }
-    
-    public func mqttDidPing(_ mqtt: CocoaMQTT) {
-        print("MQTT did ping")
-    }
-    
-    public func mqttDidReceivePong(_ mqtt: CocoaMQTT) {
-        print("MQTT did receive pong")
-    }
-    
-    public func mqttDidDisconnect(_ mqtt: CocoaMQTT, withError err: (any Error)?) {
-        print("Disconnected from MQTT broker with error: \(String(describing: err))")
-    }
-    
-    public func mqtt(_ mqtt: CocoaMQTT, didConnectAck ack: CocoaMQTTConnAck) {
-        print("Connected to MQTT broker with acknowledgment: \(ack)")
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didConnectAck ack: CocoaMQTTCONNACKReasonCode, connAckData: MqttDecodeConnAck?) {
+        print("MQTT 5 Connected with ack: \(ack)")
         
-        // Subscribe after successful connection
-        self.mqtt.subscribe("merchant_portal/\(self.merchantId!)/\(self.transactionRef!)")
-    }
-    
-    public func mqtt(_ mqtt: CocoaMQTT, didReceiveMessage message: CocoaMQTTMessage, id: UInt16) {
-        if let messageString = message.string {
-            print("Received message: \(messageString) on topic: \(message.topic)")
-            
-            DispatchQueue.main.async {
-                mqtt.disconnect()
-                self.MobpayDelegate?.launchUIPayload(messageString)
-            }
+        if ack == .success {
+            let topic = "merchant_portal/\(merchantId!)/\(transactionRef!)"
+            print("Subscribing to: \(topic)")
+            mqtt5.subscribe(topic, qos: .qos1)
         }
     }
     
-    public func mqtt(_ mqtt: CocoaMQTT, didPublishMessage message: CocoaMQTTMessage, id: UInt16) {
-        print("Published message: \(message.string ?? "") with ID: \(id)")
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didStateChangeTo state: CocoaMQTTConnState) {
+        print("MQTT 5 State: \(state)")
     }
-
-    public func mqtt(_ mqtt: CocoaMQTT, didSubscribeTopics success: NSDictionary, failed: [String]) {
-        print("Subscribed to topics: \(success), failed to subscribe to: \(failed)")
+    
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveMessage message: CocoaMQTT5Message, id: UInt16, publishData: MqttDecodePublish?) {
+        guard let messageString = message.string else {
+            print("Message string is nil")
+            return
+        }
+        
+        print("========================================")
+        print("MQTT 5 MESSAGE RECEIVED!")
+        print("Topic: \(message.topic)")
+        print("Message: \(messageString)")
+        print("========================================")
+        
+        DispatchQueue.main.async {
+            mqtt5.disconnect()
+            self.navController?.popViewController(animated: true)
+            self.onPaymentResult?(messageString)
+            self.MobpayDelegate?.launchUIPayload(messageString)
+        }
     }
-
-    func mqtt(_ mqtt: CocoaMQTT, didDisconnectWithError err: Error?) {
-        print("Disconnected from MQTT broker with error: \(String(describing: err))")
+    
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didSubscribeTopics success: NSDictionary, failed: [String], subAckData: MqttDecodeSubAck?) {
+        print("MQTT 5 Subscribed to: \(success), failed: \(failed)")
     }
+    
+    public func mqtt5DidPing(_ mqtt5: CocoaMQTT5) {
+        print("MQTT 5 ping")
+    }
+    
+    public func mqtt5DidReceivePong(_ mqtt5: CocoaMQTT5) {
+        print("MQTT 5 pong")
+    }
+    
+    public func mqtt5DidDisconnect(_ mqtt5: CocoaMQTT5, withError err: Error?) {
+        print("MQTT 5 disconnected: \(String(describing: err))")
+    }
+    
+    // Required delegate methods (empty implementations)
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didPublishMessage message: CocoaMQTT5Message, id: UInt16) {}
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didPublishAck id: UInt16, pubAckData: MqttDecodePubAck?) {}
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didPublishRec id: UInt16, pubRecData: MqttDecodePubRec?) {}
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didPublishComplete id: UInt16, pubCompData: MqttDecodePubComp?) {}
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didUnsubscribeTopics topics: [String], unsubAckData: MqttDecodeUnsubAck?) {}
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveDisconnectReasonCode reasonCode: CocoaMQTTDISCONNECTReasonCode) {}
+    public func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveAuthReasonCode reasonCode: CocoaMQTTAUTHReasonCode) {}
 }
-
 
 public protocol MobpayPaymentDelegate {
     func launchUIPayload(_ message: String)
